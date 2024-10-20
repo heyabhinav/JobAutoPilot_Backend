@@ -1,14 +1,21 @@
+import os
+import re
 import requests
 import pandas as pd
+import pdfplumber
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 
 app = FastAPI()
 
+# Mock user resume directory
+RESUME_DIR = 'resumes/'  # The directory where user resumes are stored
+
 # Ignore tags that you don't want to scrape
 ignore_tags = ['script', 'metadata', 'link', 'style', 'svg', 'path']
+
 
 # Web scraping function
 def scrape_web(url: str):
@@ -47,21 +54,78 @@ def scrape_web(url: str):
     except Exception as e:
         return str(e)
 
+
+# Function to extract information from resume
+def extract_resume_details(file_path: str):
+    with pdfplumber.open(file_path) as pdf:
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text()
+
+    # Regex patterns to extract data
+    name_pattern = re.compile(r'(Name|Full Name):?\s*([A-Z][a-z]+\s[A-Z][a-z]+)')
+    email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+    phone_pattern = re.compile(r'\b(\+?\d{1,4}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9})\b')
+    job_status_pattern = re.compile(r'(Job Status|Employment Status):?\s*(Employed|Unemployed|Freelancing)')
+    description_pattern = re.compile(r'(Description|About Me|Summary):?\s*(.*)')
+
+    # Extract information
+    name_match = name_pattern.search(text)
+    email_match = email_pattern.search(text)
+    phone_match = phone_pattern.search(text)
+    job_status_match = job_status_pattern.search(text)
+    description_match = description_pattern.search(text)
+
+    # Structure the extracted data into a dictionary
+    extracted_data = {
+        "name": name_match.group(2) if name_match else "Not Found",
+        "email": email_match.group(0) if email_match else "Not Found",
+        "phone": phone_match.group(0) if phone_match else "Not Found",
+        "job_status": job_status_match.group(2) if job_status_match else "Not Found",
+        "description": description_match.group(2) if description_match else "Not Found"
+    }
+
+    return extracted_data
+
+
 # Input model for URL
 class URLModel(BaseModel):
     url: str
 
-# Define the FastAPI endpoint
+
+# Input model for user ID
+class UserModel(BaseModel):
+    user_id: str
+
+
+# Define the FastAPI endpoint for web scraping
 @app.post("/scrape-url/")
 async def scrape_url(url_model: URLModel):
     # Call the scraping function
     csv_file = scrape_web(url_model.url)
-    
+
     # Check if it returned a CSV file
     if csv_file.endswith('.csv'):
         return {"message": "Scraping successful, CSV saved!", "csv_file": csv_file}
     else:
         return {"error": csv_file}
+
+
+# Endpoint to extract resume details for a user
+@app.post("/extract-resume/")
+async def extract_resume(user_model: UserModel):
+    # Assuming resume files are named by user ID (e.g., 1234_resume.pdf)
+    resume_file = os.path.join(RESUME_DIR, f"{user_model.user_id}_resume.pdf")
+
+    # Check if the file exists
+    if not os.path.exists(resume_file):
+        raise HTTPException(status_code=404, detail="Resume file not found")
+
+    # Extract details from the resume
+    extracted_data = extract_resume_details(resume_file)
+    
+    return extracted_data
+
 
 # To run the server, use:
 # uvicorn filename:app --reload
